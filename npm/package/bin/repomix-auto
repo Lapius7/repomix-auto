@@ -132,37 +132,65 @@ const out = cfg && cfg.output && cfg.output.filePath
     : path.join(CACHE, 'repomix-auto', `${name}-${hash}.md`);
 
 // --- 鮮度 ---
-function newerThan(base) {
-  const isNew = (f) => { try { return fs.statSync(f).mtimeMs > base; } catch { return false; } };
-  if (isNew(cfgPath)) return true; // 除外設定を変えたら再生成
+// 出力より新しいファイルを { file, mtime } で返す（新しい順）。--check 以外は1件見つかれば止める
+function newerFiles(base, all) {
+  const list = [];
+  const add = (f) => {
+    let m; try { m = fs.statSync(path.join(root, f)).mtimeMs; } catch { return true; }
+    if (m > base) list.push({ file: f, mtime: m });
+    return all || list.length === 0;
+  };
+  if (!add(CONFIG)) return list; // 除外設定を変えたら再生成
   const files = sh('git', ['ls-files', '-co', '--exclude-standard'], root);
-  if (files !== null) return files.split('\n').some((f) => f && isNew(path.join(root, f)));
-  const skip = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.venv', '__pycache__']);
-  let found = false;
-  (function walk(d) {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      if (found) return;
-      if (skip.has(e.name)) continue;
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile() && isNew(p)) found = true;
-    }
-  })(root);
-  return found;
+  if (files !== null) {
+    for (const f of files.split('\n')) if (f && f !== CONFIG && !add(f)) break;
+  } else {
+    const skip = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.venv', '__pycache__']);
+    (function walk(d) {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        if (!all && list.length) return;
+        if (skip.has(e.name)) continue;
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p); else if (e.isFile()) add(path.relative(root, p));
+      }
+    })(root);
+  }
+  return list.sort((x, y) => y.mtime - x.mtime);
 }
 const exists = fs.existsSync(out);
-const fresh = exists && !newerThan(fs.statSync(out).mtimeMs);
+const outStat = exists ? fs.statSync(out) : null;
+const newer = has('--check') ? (exists ? newerFiles(outStat.mtimeMs, true) : []) : null;
+const fresh = exists && (newer ? newer.length === 0 : newerFiles(outStat.mtimeMs, false).length === 0);
 
 if (has('--check')) {
-  if (fresh) { console.log(`${c.green('fresh')} ${home(out)}`); process.exit(0); }
-  console.log(`${c.yellow('stale')} ${home(out)}${exists ? '' : c.dim('（未生成）')}`);
+  const rel = target === root ? '' : ` ${target}`;
+  const cmd = `repomix-auto${rel}`;
+  if (fresh) {
+    console.log(`${c.green('fresh')} ${c.bold(name)} のソースマップは最新です`);
+    row('出力', home(out)); row('生成', `${ago(outStat.mtimeMs)}（${new Date(outStat.mtimeMs).toLocaleString('ja-JP')}）`); row('サイズ', kb(outStat.size));
+    row('対象', home(root));
+    process.exit(0);
+  }
+  console.log(`${c.yellow('stale')} ${c.bold(name)} のソースマップは${exists ? '古くなっています' : 'まだ生成されていません'}`);
+  row('出力', home(out) + (exists ? '' : c.dim('（未生成）')));
+  row('対象', home(root));
+  if (exists) {
+    row('生成', `${ago(outStat.mtimeMs)}（${new Date(outStat.mtimeMs).toLocaleString('ja-JP')}）・${kb(outStat.size)}`);
+    row('理由', `出力より新しいファイルが ${newer.length} 件`);
+    for (const n of newer.slice(0, 5)) console.log(`    ${c.dim('-')} ${n.file} ${c.dim(ago(n.mtime))}${n.file === CONFIG ? c.dim('（除外設定の変更）') : ''}`);
+    if (newer.length > 5) console.log(`    ${c.dim(`… ほか ${newer.length - 5} 件`)}`);
+  }
+  console.log(`\n${c.bold('再生成:')}`);
+  console.log(`  ${c.cyan(cmd)}          ${c.dim('更新して読む')}`);
+  console.log(`  ${c.cyan(cmd + ' --path')}   ${c.dim('出力パスだけ表示（Claude 向け）')}`);
+  if (exists) console.log(`  ${c.cyan(cmd + ' --force')}  ${c.dim('鮮度に関係なく作り直す')}`);
   process.exit(1);
 }
 if (!has('--force') && fresh) {
   if (pathOnly) console.log(out);
   else {
     ok(`${c.bold(name)} のソースマップは最新です`);
-    row('出力', home(out)); row('更新', `${ago(fs.statSync(out).mtimeMs)}・${kb(fs.statSync(out).size)}`);
+    row('出力', home(out)); row('更新', `${ago(outStat.mtimeMs)}・${kb(outStat.size)}`);
   }
   process.exit(0);
 }
