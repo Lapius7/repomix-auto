@@ -42,7 +42,7 @@ const NOISE = [
 
 // --- 引数 ---
 const args = process.argv.slice(2);
-const KNOWN = ['-h', '--help', '-v', '--version', '--force', '--check', '--path', '--no-auto-exclude', '--out'];
+const KNOWN = ['-h', '--help', '-v', '--version', '--force', '--check', '--path', '--no-auto-exclude', '--out', '--yes', '-y'];
 if (args.includes('-h') || args.includes('--help')) {
   console.log(`${c.bold('repomix-auto')} ${c.dim('v' + VERSION)} - Repomix のソースマップ生成を自動化する
 
@@ -54,6 +54,7 @@ ${c.bold('使い方:')} repomix-auto [ディレクトリ] [オプション]
   ${c.cyan('--path')}              出力パスだけを標準出力に表示（スクリプト向け。必要なら生成する）
   ${c.cyan('--out <dir>')}         出力先ディレクトリ（環境変数 REPOMIX_AUTO_OUT でも可）
   ${c.cyan('--no-auto-exclude')}   Top 5 の自動除外をしない
+  ${c.cyan('-y, --yes')}           プロジェクトに見えないディレクトリでも確認せず実行
   ${c.cyan('-v, --version')}       バージョン
 
 ${c.bold('出力先:')} ${home(CACHE)}/repomix-auto/<名前>-<ハッシュ4桁>.md
@@ -63,11 +64,11 @@ ${c.bold('出力先:')} ${home(CACHE)}/repomix-auto/<名前>-<ハッシュ4桁>.
 }
 if (args.includes('-v') || args.includes('--version')) { console.log(VERSION); process.exit(0); }
 
+const has = (f) => args.includes(f);
 const oi = args.indexOf('--out');
 if (oi >= 0 && (!args[oi + 1] || args[oi + 1].startsWith('-'))) die('--out にはディレクトリを指定してください');
 const outOpt = oi >= 0 ? args[oi + 1] : null;
 for (const a of args) if (a.startsWith('-') && !KNOWN.includes(a)) die(`不明なオプション: ${a}（repomix-auto --help）`, 2);
-const has = (f) => args.includes(f);
 const pathOnly = has('--path');
 const positional = args.filter((a, i) => !a.startsWith('-') && (oi < 0 || i !== oi + 1));
 const target = path.resolve(positional[0] || '.');
@@ -80,6 +81,23 @@ function sh(cmd, a, cwd) {
   catch { return null; }
 }
 const root = sh('git', ['rev-parse', '--show-toplevel'], target) || target;
+
+// --- 安全確認（誤爆防止）---
+if (root === os.homedir() || root === path.parse(root).root) {
+  die(`${home(root)} 直下では実行できません。プロジェクトのディレクトリに移動するか、対象を指定してください（例: repomix-auto ~/projects/app）`, 2);
+}
+const MARKERS = ['.git', 'package.json', 'go.mod', 'Cargo.toml', 'pyproject.toml', 'requirements.txt', 'setup.py', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'Gemfile', 'composer.json', 'Makefile', 'CMakeLists.txt', 'deno.json', 'mix.exs', CONFIG];
+function confirm(q) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  process.stdout.write(`${c.yellow('?')} ${q} [y/N] `);
+  const b = Buffer.alloc(64); let n = 0;
+  try { n = fs.readSync(0, b, 0, 64, null); } catch {}
+  return /^y/i.test(b.toString('utf8', 0, n).trim());
+}
+if (!MARKERS.some((m) => fs.existsSync(path.join(root, m))) && !has('-y') && !has('--yes') && !has('--check')) {
+  const msg = `${home(root)} はプロジェクトに見えません（.git や package.json などが無い）`;
+  if (!confirm(`${msg}。実行しますか？`)) die(`${msg}。実行するなら --yes を付けてください`, 2);
+}
 const name = path.basename(root);
 const cfgPath = path.join(root, CONFIG);
 let cfg = null; let cfgCreated = false; let cfgDirty = false;
@@ -175,6 +193,7 @@ function run(label) {
     p.on('error', (e) => { if (timer) clearInterval(timer); die(e.code === 'ENOENT' ? 'npx が見つかりません（Node.js/npm を入れてください）' : e.message); });
     p.on('close', (code) => {
       if (timer) { clearInterval(timer); process.stdout.write('\r\x1b[K'); }
+      if (code !== 0 && cfgCreated) { try { fs.unlinkSync(cfgPath); } catch {} } // 失敗したら今回作った config を残さない
       if (code !== 0) die(`repomix が失敗しました (exit ${code})\n${c.dim(strip(errBuf || buf).trim().split('\n').slice(-8).join('\n'))}`);
       resolve(strip(buf));
     });
