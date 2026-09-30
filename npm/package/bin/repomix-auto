@@ -1,0 +1,232 @@
+#!/usr/bin/env node
+// repomix-auto - Repomix のソースマップ生成を自動化する（鮮度確認・config 作成・重いファイルの自動除外）。
+'use strict';
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { spawn, execFileSync } = require('child_process');
+
+const VERSION = '0.2.0';
+const CONFIG = 'repomix.config.json';
+const CUSTOM_OUT = process.env.REPOMIX_AUTO_OUT; // 指定時はハッシュ無しの <名前>.md で固定運用
+const CACHE = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+
+// --- 表示 ---
+const tty = process.stdout.isTTY && !process.env.NO_COLOR;
+const paint = (n) => (s) => (tty ? `\x1b[${n}m${s}\x1b[0m` : String(s));
+const c = { bold: paint('1'), dim: paint('2'), red: paint('31'), green: paint('32'), yellow: paint('33'), cyan: paint('36') };
+const ok = (s) => console.log(`${c.green('✔')} ${s}`);
+const warn = (s) => console.log(`${c.yellow('!')} ${s}`);
+const info = (s) => console.log(`${c.cyan('•')} ${s}`);
+const row = (k, v) => console.log(`  ${c.dim(k.padEnd(6))} ${v}`);
+function die(msg, code = 1) { console.error(`${c.red('✖')} ${msg}`); process.exit(code); }
+const home = (p) => (p.startsWith(os.homedir()) ? '~' + p.slice(os.homedir().length) : p);
+const kb = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+const ago = (ms) => {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  return s < 60 ? `${s}秒前` : s < 3600 ? `${Math.floor(s / 60)}分前` : s < 86400 ? `${Math.floor(s / 3600)}時間前` : `${Math.floor(s / 86400)}日前`;
+};
+
+// 構造把握に不要と明らかなもの（初回 config に入れる）
+const PRESET = ['**/migrations/**', '**/*.sql', '**/locales/**', '**/i18n/**'];
+// 初回実行後の Top 5 のうち、コードと無関係と判断して自動除外するもの
+const NOISE = [
+  [/(^|\/)(locales?|i18n|lang|translations?)\//i, 'i18n・メッセージ文言'],
+  [/(^|\/)migrations?\//i, 'DB マイグレーション'],
+  [/\.(sql|csv|tsv|ndjson|jsonl)$/i, 'データファイル'],
+  [/\.min\.(js|css)$|\.map$|\.snap$/i, '生成物'],
+  [/(^|\/)(generated|__generated__|__snapshots__|fixtures?|vendor)\//i, '生成物・固定データ'],
+  [/(^|\/)(CHANGELOG|LICENSE)(\.md)?$/i, 'ドキュメント（構造に無関係）'],
+];
+
+// --- 引数 ---
+const args = process.argv.slice(2);
+const KNOWN = ['-h', '--help', '-v', '--version', '--force', '--check', '--path', '--no-auto-exclude', '--out'];
+if (args.includes('-h') || args.includes('--help')) {
+  console.log(`${c.bold('repomix-auto')} ${c.dim('v' + VERSION)} - Repomix のソースマップ生成を自動化する
+
+${c.bold('使い方:')} repomix-auto [ディレクトリ] [オプション]
+
+  ${c.cyan('（なし）')}            鮮度確認 → 古ければ再生成
+  ${c.cyan('--check')}             生成せず鮮度だけ確認（fresh=0 / stale=1）
+  ${c.cyan('--force')}             鮮度に関係なく再生成
+  ${c.cyan('--path')}              出力パスだけを標準出力に表示（スクリプト向け。必要なら生成する）
+  ${c.cyan('--out <dir>')}         出力先ディレクトリ（環境変数 REPOMIX_AUTO_OUT でも可）
+  ${c.cyan('--no-auto-exclude')}   Top 5 の自動除外をしない
+  ${c.cyan('-v, --version')}       バージョン
+
+${c.bold('出力先:')} ${home(CACHE)}/repomix-auto/<名前>-<ハッシュ4桁>.md
+  --out / REPOMIX_AUTO_OUT 指定時は <名前>.md
+  既存の ${CONFIG} に output.filePath があればそれを優先`);
+  process.exit(0);
+}
+if (args.includes('-v') || args.includes('--version')) { console.log(VERSION); process.exit(0); }
+
+const oi = args.indexOf('--out');
+if (oi >= 0 && (!args[oi + 1] || args[oi + 1].startsWith('-'))) die('--out にはディレクトリを指定してください');
+const outOpt = oi >= 0 ? args[oi + 1] : null;
+for (const a of args) if (a.startsWith('-') && !KNOWN.includes(a)) die(`不明なオプション: ${a}（repomix-auto --help）`, 2);
+const has = (f) => args.includes(f);
+const pathOnly = has('--path');
+const positional = args.filter((a, i) => !a.startsWith('-') && (oi < 0 || i !== oi + 1));
+const target = path.resolve(positional[0] || '.');
+if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) die(`ディレクトリが見つかりません: ${target}`);
+// --path のときは標準出力を出力パス1行だけにする
+const say = pathOnly ? { ok() {}, warn() {}, info() {}, row() {}, log() {} } : { ok, warn, info, row, log: console.log };
+
+function sh(cmd, a, cwd) {
+  try { return execFileSync(cmd, a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+  catch { return null; }
+}
+const root = sh('git', ['rev-parse', '--show-toplevel'], target) || target;
+const name = path.basename(root);
+const cfgPath = path.join(root, CONFIG);
+let cfg = null; let cfgCreated = false; let cfgDirty = false;
+if (fs.existsSync(cfgPath)) {
+  try { cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); }
+  catch (e) { die(`${CONFIG} が JSON として読めません: ${e.message}`); }
+}
+const customDir = outOpt || CUSTOM_OUT;
+const hash = crypto.createHash('sha1').update(root).digest('hex').slice(0, 4);
+const out = cfg && cfg.output && cfg.output.filePath
+  ? path.resolve(root, cfg.output.filePath) // 既存 config を尊重
+  : customDir
+    ? path.join(path.resolve(customDir), `${name}.md`)
+    : path.join(CACHE, 'repomix-auto', `${name}-${hash}.md`);
+
+// --- 鮮度 ---
+function newerThan(base) {
+  const isNew = (f) => { try { return fs.statSync(f).mtimeMs > base; } catch { return false; } };
+  if (isNew(cfgPath)) return true; // 除外設定を変えたら再生成
+  const files = sh('git', ['ls-files', '-co', '--exclude-standard'], root);
+  if (files !== null) return files.split('\n').some((f) => f && isNew(path.join(root, f)));
+  const skip = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.venv', '__pycache__']);
+  let found = false;
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (found) return;
+      if (skip.has(e.name)) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.isFile() && isNew(p)) found = true;
+    }
+  })(root);
+  return found;
+}
+const exists = fs.existsSync(out);
+const fresh = exists && !newerThan(fs.statSync(out).mtimeMs);
+
+if (has('--check')) {
+  if (fresh) { console.log(`${c.green('fresh')} ${home(out)}`); process.exit(0); }
+  console.log(`${c.yellow('stale')} ${home(out)}${exists ? '' : c.dim('（未生成）')}`);
+  process.exit(1);
+}
+if (!has('--force') && fresh) {
+  if (pathOnly) console.log(out);
+  else {
+    ok(`${c.bold(name)} のソースマップは最新です`);
+    row('出力', home(out)); row('更新', `${ago(fs.statSync(out).mtimeMs)}・${kb(fs.statSync(out).size)}`);
+  }
+  process.exit(0);
+}
+
+// --- config ---
+if (!pathOnly) console.log(`${c.bold('repomix-auto')} ${c.dim(name)}`);
+if (!cfg) {
+  cfg = {
+    output: { filePath: out, style: 'markdown', compress: true, fileSummary: false, headerText: '' },
+    ignore: { useGitignore: true, customPatterns: ['**/node_modules/**', '**/dist/**', '**/*.lock', '**/package-lock.json', '**/*.svg', CONFIG, ...PRESET] },
+  };
+  cfgCreated = cfgDirty = true;
+  say.info(`${CONFIG} を作成`);
+}
+cfg.ignore = cfg.ignore || {};
+cfg.ignore.customPatterns = cfg.ignore.customPatterns || [];
+cfg.output = cfg.output || {};
+if (!cfg.output.filePath) { cfg.output.filePath = out; cfgDirty = true; }
+const save = () => { fs.mkdirSync(path.dirname(out), { recursive: true }); fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n'); cfgDirty = false; };
+fs.mkdirSync(path.dirname(out), { recursive: true });
+if (cfgDirty) save();
+
+const gp = sh('git', ['rev-parse', '--git-path', 'info/exclude'], root); // config は必ず Git 除外（既存 config でも）
+if (gp) {
+  const f = path.resolve(root, gp);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  const cur = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+  if (!cur.split('\n').includes(CONFIG) && sh('git', ['ls-files', CONFIG], root) === '') {
+    fs.appendFileSync(f, (cur && !cur.endsWith('\n') ? '\n' : '') + CONFIG + '\n');
+    say.info(`.git/info/exclude に ${CONFIG} を追記`);
+  } else if (sh('git', ['ls-files', CONFIG], root)) {
+    say.warn(`${CONFIG} は既に Git 管理されています（除外されません）`);
+  }
+}
+
+// --- repomix 実行 ---
+const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+function run(label) {
+  return new Promise((resolve) => {
+    const frames = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'; let i = 0;
+    const timer = tty && !pathOnly ? setInterval(() => process.stdout.write(`\r${c.cyan(frames[i++ % 10])} ${label}`), 80) : null;
+    let buf = ''; let errBuf = '';
+    const p = spawn('npx', ['--yes', 'repomix'], { cwd: root });
+    p.stdout.on('data', (d) => (buf += d));
+    p.stderr.on('data', (d) => (errBuf += d));
+    p.on('error', (e) => { if (timer) clearInterval(timer); die(e.code === 'ENOENT' ? 'npx が見つかりません（Node.js/npm を入れてください）' : e.message); });
+    p.on('close', (code) => {
+      if (timer) { clearInterval(timer); process.stdout.write('\r\x1b[K'); }
+      if (code !== 0) die(`repomix が失敗しました (exit ${code})\n${c.dim(strip(errBuf || buf).trim().split('\n').slice(-8).join('\n'))}`);
+      resolve(strip(buf));
+    });
+  });
+}
+const num = (re, s) => { const m = s.match(re); return m ? m[1] : null; };
+const top5 = (s) => {
+  const i = s.indexOf('Top 5 Files');
+  if (i < 0) return [];
+  return [...s.slice(i).matchAll(/^\s*\d+\.\s+(.+?)\s+\(([\d,]+) tokens/gm)].map((m) => ({ file: m[1], tokens: m[2] }));
+};
+const escGlob = (f) => f.replace(/([\\[\](){}!*?+@])/g, '\\$1'); // [id].tsx などを字面通りに扱う
+
+(async () => {
+  let stdout = await run('ソースマップを生成中…');
+  const excluded = [];
+  if (!has('--no-auto-exclude')) {
+    for (let round = 0; round < 3; round++) { // 除外後に次の重いファイルが上がってくることがある
+      const auto = [];
+      for (const t of top5(stdout)) {
+        const hit = NOISE.find(([re]) => re.test(t.file));
+        if (hit) auto.push({ ...t, why: hit[1] });
+      }
+      if (!auto.length) break;
+      for (const t of auto) {
+        const g = escGlob(t.file);
+        if (!cfg.ignore.customPatterns.includes(g)) cfg.ignore.customPatterns.push(g);
+        excluded.push(t);
+      }
+      cfg.output.headerText = [cfg.output.headerText, '除外(自動): ' + auto.map((t) => `${t.file}: ${t.why}`).join(' / ')].filter(Boolean).join('\n');
+      save();
+      stdout = await run(`重いファイルを除外して再生成中…（${excluded.length}件）`);
+    }
+  }
+  // 最終出力の Top 5 に残った保留分だけを見せる
+  const remain = top5(stdout).filter((t) => !NOISE.some(([re]) => re.test(t.file)));
+
+  if (pathOnly) { console.log(out); return; }
+  ok(`${c.bold('生成しました')}`);
+  row('出力', home(out));
+  const files = num(/Total Files:\s*([\d,]+)/, stdout); const tokens = num(/Total Tokens:\s*([\d,]+)/, stdout);
+  row('規模', `${files ?? '?'} files / ${tokens ?? '?'} tokens${fs.existsSync(out) ? `（${kb(fs.statSync(out).size)}）` : ''}`);
+  if (cfgCreated) row('設定', home(cfgPath));
+  if (excluded.length) {
+    info('自動除外');
+    for (const t of excluded) console.log(`    ${c.dim('-')} ${t.file} ${c.dim(`(${t.tokens} tokens・${t.why})`)}`);
+  }
+  if (remain.length && remain[0] && Number(remain[0].tokens.replace(/,/g, '')) > 3000) {
+    warn('重いが判断保留（不要なら repomix.config.json の ignore.customPatterns へ）');
+    for (const t of remain.slice(0, 3)) console.log(`    ${c.dim('-')} ${t.file} ${c.dim(`(${t.tokens} tokens)`)}`);
+  }
+  if (/Suspicious|suspicious file\(s\) detected/i.test(stdout) && !/No suspicious files detected/i.test(stdout)) {
+    warn('repomix のセキュリティチェックが疑わしいファイルを検出しました。出力を確認してください');
+  }
+})();
