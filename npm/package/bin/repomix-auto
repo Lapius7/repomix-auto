@@ -40,6 +40,8 @@ const NOISE = [
   [/(^|\/)(CHANGELOG|LICENSE)(\.md)?$/i, 'ドキュメント（構造に無関係）'],
 ];
 
+const FOOTER = '作者: Lapius (https://github.com/Lapius7)\n@lapius のツール: lapacks で一覧・インストール・更新';
+
 // --- 引数 ---
 const args = process.argv.slice(2);
 const KNOWN = ['-h', '--help', '-v', '--version', '--force', '--check', '--path', '--no-auto-exclude', '--out', '--yes', '-y', '--update'];
@@ -60,10 +62,10 @@ ${c.bold('使い方:')} repomix-auto [ディレクトリ] [オプション]
 
 ${c.bold('出力先:')} ${home(CACHE)}/repomix-auto/<名前>-<ハッシュ4桁>.md
   --out / REPOMIX_AUTO_OUT 指定時は <名前>.md
-  既存の ${CONFIG} に output.filePath があればそれを優先`);
+  既存の ${CONFIG} に output.filePath があればそれを優先\n\n${FOOTER}`);
   process.exit(0);
 }
-if (args.includes('-v') || args.includes('--version')) { console.log(VERSION); process.exit(0); }
+if (args.includes('-v') || args.includes('--version')) { console.log(`repomix-auto ${VERSION}\n${FOOTER}`); process.exit(0); }
 if (args.includes('--update')) {
   const PKG = '@lapius/repomix-auto';
   const latest = (() => {
