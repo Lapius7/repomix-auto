@@ -1,0 +1,26 @@
+{
+  "name": "@lapius/repomix-auto",
+  "version": "0.0.0",
+  "description": "Repomix のソースマップ生成を自動化する CLI（鮮度確認・config 作成・重いファイルの自動除外）",
+  "keywords": [
+    "repomix",
+    "cli",
+    "source-map",
+    "claude-code"
+  ],
+  "license": "MIT",
+  "bin": {
+    "repomix-auto": "bin/repomix-auto"
+  },
+  "files": [
+    "bin/repomix-auto"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://github.com/Lapius7/repomix-auto",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lapius7/repomix-auto.git"
+  }
+}
