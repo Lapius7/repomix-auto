@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 
-const VERSION = '0.2.0';
+const VERSION = require('../package.json').version; // 公開時に build.mjs がタグの版を書き込む
 const CONFIG = 'repomix.config.json';
 const CUSTOM_OUT = process.env.REPOMIX_AUTO_OUT; // 指定時はハッシュ無しの <名前>.md で固定運用
 const CACHE = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
@@ -42,7 +42,7 @@ const NOISE = [
 
 // --- 引数 ---
 const args = process.argv.slice(2);
-const KNOWN = ['-h', '--help', '-v', '--version', '--force', '--check', '--path', '--no-auto-exclude', '--out', '--yes', '-y'];
+const KNOWN = ['-h', '--help', '-v', '--version', '--force', '--check', '--path', '--no-auto-exclude', '--out', '--yes', '-y', '--update'];
 if (args.includes('-h') || args.includes('--help')) {
   console.log(`${c.bold('repomix-auto')} ${c.dim('v' + VERSION)} - Repomix のソースマップ生成を自動化する
 
@@ -55,6 +55,7 @@ ${c.bold('使い方:')} repomix-auto [ディレクトリ] [オプション]
   ${c.cyan('--out <dir>')}         出力先ディレクトリ（環境変数 REPOMIX_AUTO_OUT でも可）
   ${c.cyan('--no-auto-exclude')}   Top 5 の自動除外をしない
   ${c.cyan('-y, --yes')}           プロジェクトに見えないディレクトリでも確認せず実行
+  ${c.cyan('--update')}            最新版に更新（npm i -g @lapius/repomix-auto@latest）
   ${c.cyan('-v, --version')}       バージョン
 
 ${c.bold('出力先:')} ${home(CACHE)}/repomix-auto/<名前>-<ハッシュ4桁>.md
@@ -63,6 +64,21 @@ ${c.bold('出力先:')} ${home(CACHE)}/repomix-auto/<名前>-<ハッシュ4桁>.
   process.exit(0);
 }
 if (args.includes('-v') || args.includes('--version')) { console.log(VERSION); process.exit(0); }
+if (args.includes('--update')) {
+  const PKG = '@lapius/repomix-auto';
+  const latest = (() => {
+    try { return execFileSync('npm', ['view', PKG, 'version', '--prefer-online'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+    catch { return null; }
+  })();
+  if (!latest) die('最新版を確認できません（ネットワークか npm を確認してください）');
+  const cmp = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
+  if (cmp(latest, VERSION) <= 0) { ok(`最新です ${c.dim('v' + VERSION)}`); process.exit(0); }
+  info(`v${VERSION} → v${latest} に更新します`);
+  try { execFileSync('npm', ['install', '-g', `${PKG}@${latest}`], { stdio: 'inherit' }); }
+  catch { die(`更新に失敗しました。手動で実行してください: npm i -g ${PKG}@latest`); }
+  ok(`v${latest} に更新しました`);
+  process.exit(0);
+}
 
 const has = (f) => args.includes(f);
 const oi = args.indexOf('--out');
