@@ -28,3 +28,5 @@ repomix-auto [ディレクトリ] [--force] [--check] [--path] [--out <dir>] [--
 - 初回実行後の Top 5 のうち、i18n・マイグレーション・データ・生成物は自動で除外して `headerText` に理由を記録。判断できないものは一覧表示
 
 必要なもの: Node 18+（repomix は `npx` で実行）
+
+`--update` は pnpm（なければ npm）でグローバルを更新します。`REPOMIX_AUTO_PM=npm|pnpm` で固定できます。
