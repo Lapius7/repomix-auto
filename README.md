@@ -3,7 +3,7 @@
 Repomix のソースマップ生成を自動化する CLI。プロジェクトに触り始めるとき、全体を読まずに済むようにする。
 
 ```
-npm i -g @lapius/repomix-auto
+pnpm add -g @lapius/repomix-auto
 repomix-auto [ディレクトリ] [--force] [--check] [--path] [--out <dir>] [--no-auto-exclude]
 ```
 
@@ -14,7 +14,7 @@ repomix-auto [ディレクトリ] [--force] [--check] [--path] [--out <dir>] [--
 | `--path` | 出力パスだけを標準出力に表示（スクリプト向け） |
 | `--out <dir>` | 出力先ディレクトリ |
 | `--no-auto-exclude` | Top 5 の自動除外をしない |
-| `--update` | 最新版に更新（`npm i -g @lapius/repomix-auto@latest`） |
+| `--update` | 最新版に更新（`pnpm add -g @lapius/repomix-auto@latest`） |
 | `-y, --yes` | プロジェクトに見えないディレクトリでも確認せず実行 |
 
 誤爆防止: ホーム・`/` 直下では実行を拒否します。`.git` や `package.json` などが無いディレクトリでは確認します（非対話では `--yes` が必要）。repomix が失敗したら、その回に作った config は消します。
