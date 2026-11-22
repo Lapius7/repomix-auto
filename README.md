@@ -1,32 +1,81 @@
-# repomix-auto
+<div align="center">
 
-Repomix のソースマップ生成を自動化する CLI。プロジェクトに触り始めるとき、全体を読まずに済むようにする。
+<p align="center">
+  <img src="docs/images/banner.png" alt="Repomix Auto" width="100%">
+</p>
 
-```
+<p align="center"><b>English</b> | <a href="README.ja.md">日本語</a></p>
+
+<h1 align="center">Repomix Auto</h1>
+
+<h3 align="center">Generate a Repomix source map without reading the whole project.</h3>
+
+<p align="center">A CLI that automates Repomix source map generation: freshness check, config creation, and automatic exclusion of heavy files. It helps when you start working on a new project.</p>
+
+<p align="center">
+  <a href="https://github.com/Lapius7/repomix-auto/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Lapius7/repomix-auto?label=release&style=flat-square&color=e8833a&logo=github"></a>
+  <a href="https://www.npmjs.com/package/@lapius/repomix-auto"><img alt="npm" src="https://img.shields.io/npm/v/@lapius/repomix-auto?style=flat-square&color=cb3837&logo=npm"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/Lapius7/repomix-auto?style=flat-square&color=97ca00"></a>
+  <a href="https://repomix.com"><img alt="Repomix" src="https://img.shields.io/badge/for-Repomix-7c3aed?style=flat-square"></a>
+  <a href="https://github.com/Lapius7/repomix-auto/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Lapius7/repomix-auto?style=flat-square&color=e3b341&logo=github"></a>
+  <a href="https://github.com/Lapius7/repomix-auto/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/Lapius7/repomix-auto?style=flat-square&color=3b82f6"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#options">Options</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#safety">Safety</a>
+</p>
+
+</div>
+
+---
+
+## Quick start
+
+You need Node 18 or later (Repomix is run with `npx`).
+
+```sh
 pnpm add -g @lapius/repomix-auto
-repomix-auto [ディレクトリ] [--force] [--check] [--path] [--out <dir>] [--no-auto-exclude]
+repomix-auto [directory] [--force] [--check] [--path] [--out <dir>] [--no-auto-exclude]
 ```
 
-| オプション | 説明 |
-|-|-|
-| `--check` | 生成せず鮮度だけ確認（fresh=0 / stale=1） |
-| `--force` | 鮮度に関係なく再生成 |
-| `--path` | 出力パスだけを標準出力に表示（スクリプト向け） |
-| `--out <dir>` | 出力先ディレクトリ |
-| `--no-auto-exclude` | Top 5 の自動除外をしない |
-| `--update` | 最新版に更新（`pnpm add -g @lapius/repomix-auto@latest`） |
-| `-y, --yes` | プロジェクトに見えないディレクトリでも確認せず実行 |
+Run `repomix-auto` in a project directory. It writes the map to `~/.cache/repomix-auto/<name>-<4-char path hash>.md`.
 
-誤爆防止: ホーム・`/` 直下では実行を拒否します。`.git` や `package.json` などが無いディレクトリでは確認します（非対話では `--yes` が必要）。repomix が失敗したら、その回に作った config は消します。
+## Options
 
-```
-```
+| Option | What it does |
+|---|---|
+| `--check` | Only check freshness, do not generate (fresh = exit 0, stale = exit 1) |
+| `--force` | Regenerate regardless of freshness |
+| `--path` | Print only the output path to stdout (for scripts; generates if needed) |
+| `--out <dir>` | Output directory |
+| `--no-auto-exclude` | Do not auto-exclude files from the Top 5 |
+| `--update` | Update to the latest version (`pnpm add -g @lapius/repomix-auto@latest`) |
+| `-y, --yes` | Run without asking, even in a directory that does not look like a project |
 
-- 出力先（既定）: `~/.cache/repomix-auto/<名前>-<パスのハッシュ4桁>.md`。`--out <dir>` か `REPOMIX_AUTO_OUT` で固定ディレクトリの `<名前>.md` にできる。既存の `repomix.config.json` に `output.filePath` があればそれを優先
-- 鮮度確認: 出力より新しいソース（git 管理下は gitignore を除く）が無ければ再生成しない（`--check` で確認のみ）
-- `repomix.config.json` を自動作成し、git 管理下では `.git/info/exclude` に追記
-- 初回実行後の Top 5 のうち、i18n・マイグレーション・データ・生成物は自動で除外して `headerText` に理由を記録。判断できないものは一覧表示
+Environment variables: `REPOMIX_AUTO_OUT` (fixed output directory), `REPOMIX_AUTO_PM=npm|pnpm` (package manager used by `--update`; pnpm if available, otherwise npm).
 
-必要なもの: Node 18+（repomix は `npx` で実行）
+## How it works
 
-`--update` は pnpm（なければ npm）でグローバルを更新します。`REPOMIX_AUTO_PM=npm|pnpm` で固定できます。
+- **Output**: by default `~/.cache/repomix-auto/<name>-<4-char path hash>.md`. With `--out <dir>` or `REPOMIX_AUTO_OUT`, it becomes `<name>.md` in a fixed directory. An `output.filePath` in an existing `repomix.config.json` takes priority.
+- **Freshness**: it does not regenerate unless a source file is newer than the output (under git, gitignored files are ignored). `--check` only checks.
+- **Config**: it creates `repomix.config.json` and, under git, adds it to `.git/info/exclude`.
+- **Auto exclude**: after the first run, files in the Top 5 that are i18n, migrations, data, or generated output are excluded automatically, and the reason is recorded in `headerText`. Files it cannot judge are listed.
+
+## Safety
+
+> [!WARNING]
+> To avoid running it by mistake, it refuses to run in your home directory or at the filesystem root. In a directory with no `.git`, `package.json`, or similar marker, it asks first (non-interactive runs need `--yes`). If Repomix fails, the config created in that run is removed.
+
+> [!NOTE]
+> This README was rewritten from the previous text and checked against `npm/package/bin/repomix-auto` (options, environment variables, refusal rules, output path). The command was not run for this rewrite.
+
+## Development
+
+Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed. `npm/build.mjs` writes the tag version into `npm/package/package.json`.
+
+## License
+
+MIT
